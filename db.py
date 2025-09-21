@@ -33,8 +33,14 @@ def init_db():
                 schedule_time TEXT NOT NULL
             )
         """)
+        # Add default admin account if it doesn't exist
+        c.execute("SELECT email FROM users WHERE email = 'admin'")
+        if not c.fetchone():
+            hashed = pwd_context.hash("pass99()")
+            c.execute("INSERT INTO users (email, password, role) VALUES (?, ?, ?)", 
+                     ('admin', hashed, 'admin'))
         conn.commit()
-        logger.debug("Database tables created successfully")
+        logger.debug("Database tables created successfully with admin account")
     except sqlite3.Error as e:
         logger.error(f"Database initialization error: {e}")
         st.error(f"Database initialization error: {e}")
@@ -182,6 +188,44 @@ def get_user_scheduled_posts(user_email):
     except sqlite3.Error as e:
         logger.error(f"Database error fetching scheduled posts: {e}")
         st.error(f"Database error fetching scheduled posts: {e}")
+        return []
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            logger.warning("Failed to close database connection")
+
+def get_all_users():
+    logger.info("Fetching all users")
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("SELECT email, role, api_calls FROM users")
+        users = c.fetchall()
+        logger.debug(f"Retrieved {len(users)} users")
+        return users
+    except sqlite3.Error as e:
+        logger.error(f"Database error fetching all users: {e}")
+        st.error(f"Database error fetching all users: {e}")
+        return []
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            logger.warning("Failed to close database connection")
+
+def get_all_scheduled_posts():
+    logger.info("Fetching all scheduled posts")
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("SELECT id, user_email, platform, content, schedule_time FROM scheduled_posts ORDER BY schedule_time")
+        posts = c.fetchall()
+        logger.debug(f"Retrieved {len(posts)} scheduled posts")
+        return posts
+    except sqlite3.Error as e:
+        logger.error(f"Database error fetching all scheduled posts: {e}")
+        st.error(f"Database error fetching all scheduled posts: {e}")
         return []
     finally:
         try:
