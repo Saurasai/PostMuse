@@ -1,17 +1,15 @@
 import asyncio
+import sqlite3
 import streamlit as st
 import streamlit.components.v1 as components
-from streamlit_lottie import st_lottie
-import requests
 import pandas as pd
 from datetime import datetime
-from db import verify_user, add_user, get_user_role, get_api_calls, increment_api_calls, schedule_post, get_user_scheduled_posts, delete_scheduled_post
+from db import DB_PATH, verify_user, add_user, get_user_role, get_api_calls, increment_api_calls, schedule_post, get_user_scheduled_posts, delete_scheduled_post, get_all_users, get_all_scheduled_posts
 from api import generate_platform_drafts
 from config import PROMPT_TEMPLATES, TONE_OPTIONS
 import logging
 
 logger = logging.getLogger(__name__)
-
 
 def login_register():
     logger.info("Rendering login/register UI")
@@ -55,10 +53,146 @@ def login_register():
                 st.error(f"Registration error: {e}")
                 logger.error(f"Registration error for {reg_email}: {e}")
 
+def update_user(email: str, role: str = None, api_calls: int = None):
+    logger.info(f"Updating user: {email}")
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        updates = []
+        params = []
+        if role is not None:
+            updates.append("role = ?")
+            params.append(role)
+        if api_calls is not None:
+            updates.append("api_calls = ?")
+            params.append(api_calls)
+        if updates:
+            params.append(email)
+            query = f"UPDATE users SET {', '.join(updates)} WHERE email = ?"
+            c.execute(query, params)
+            conn.commit()
+            logger.debug(f"User {email} updated successfully")
+        else:
+            logger.debug("No updates provided for user")
+    except sqlite3.Error as e:
+        logger.error(f"Database error updating user: {e}")
+        st.error(f"Database error updating user: {e}")
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            logger.warning("Failed to close database connection")
+
+def delete_user(email: str):
+    logger.info(f"Deleting user: {email}")
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("DELETE FROM users WHERE email = ?", (email,))
+        c.execute("DELETE FROM scheduled_posts WHERE user_email = ?", (email,))
+        conn.commit()
+        logger.debug(f"User {email} and their scheduled posts deleted successfully")
+    except sqlite3.Error as e:
+        logger.error(f"Database error deleting user: {e}")
+        st.error(f"Database error deleting user: {e}")
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            logger.warning("Failed to close database connection")
+
+def admin_panel():
+    logger.info("Rendering admin panel")
+    st.subheader("Admin Panel")
+
+    # Create new user
+    st.markdown("### Create New User")
+    with st.form(key="create_user_form"):
+        new_email = st.text_input("New User Email")
+        new_password = st.text_input("New User Password", type="password")
+        new_role = st.selectbox("Role", ["user", "admin"], key="new_user_role")
+        submit_create = st.form_submit_button("Create User")
+        if submit_create:
+            if new_email and new_password:
+                if add_user(new_email.lower(), new_password, new_role):
+                    st.success(f"User {new_email} created successfully")
+                    logger.info(f"Admin created user: {new_email}")
+                    st.rerun()
+                else:
+                    st.error("Failed to create user. Email may already exist.")
+                    logger.warning(f"Failed to create user: {new_email}")
+            else:
+                st.error("Email and password are required.")
+                logger.warning("Attempt to create user with missing email or password")
+
+    # Display and manage all users
+    st.markdown("### Manage Users")
+    users = get_all_users()
+    if not users:
+        st.info("No users found in the database.")
+        logger.debug("No users found in database")
+    else:
+        user_data = [{"Email": email, "Role": role, "API Calls": api_calls} for email, role, api_calls in users]
+        st.table(user_data)
+        logger.debug(f"Displayed {len(user_data)} users in admin panel")
+
+        # Update or delete user
+        st.markdown("#### Update/Delete User")
+        selected_email = st.selectbox("Select User", [u[0] for u in users], key="update_user_select")
+        with st.form(key="update_user_form"):
+            new_role = st.selectbox("New Role", ["user", "admin"], key="update_user_role")
+            new_api_calls = st.number_input("New API Calls", min_value=0, step=1, key="update_api_calls")
+            col1, col2 = st.columns(2)
+            with col1:
+                submit_update = st.form_submit_button("Update User")
+            with col2:
+                submit_delete = st.form_submit_button("Delete User")
+            
+            if submit_update:
+                update_user(selected_email, role=new_role, api_calls=new_api_calls)
+                st.success(f"User {selected_email} updated successfully")
+                logger.info(f"Admin updated user: {selected_email}")
+                st.rerun()
+            if submit_delete:
+                if selected_email == st.session_state.logged_in_user:
+                    st.error("Cannot delete your own admin account!")
+                    logger.warning(f"Admin {selected_email} attempted to delete own account")
+                else:
+                    delete_user(selected_email)
+                    st.success(f"User {selected_email} deleted successfully")
+                    logger.info(f"Admin deleted user: {selected_email}")
+                    st.rerun()
+
+    # Display and manage all scheduled posts
+    st.markdown("### All Scheduled Posts")
+    posts = get_all_scheduled_posts()
+    if not posts:
+        st.info("No scheduled posts found.")
+        logger.debug("No scheduled posts found")
+    else:
+        post_data = [
+            {
+                "Post ID": post_id,
+                "User Email": user_email,
+                "Platform": platform,
+                "Content": content,
+                "Scheduled Time (UTC)": schedule_time
+            } for post_id, user_email, platform, content, schedule_time in posts
+        ]
+        st.table(post_data)
+        logger.debug(f"Displayed {len(post_data)} scheduled posts in admin panel")
+        
+        # Delete scheduled post
+        st.markdown("#### Delete Scheduled Post")
+        post_id_to_delete = st.number_input("Enter Post ID to delete", min_value=1, step=1)
+        if st.button("Delete Post"):
+            delete_scheduled_post(post_id_to_delete)
+            st.success(f"Scheduled post {post_id_to_delete} deleted.")
+            logger.info(f"Admin deleted scheduled post {post_id_to_delete}")
+            st.rerun()
+
 def render_main_ui():
     logger.info("Rendering main UI")
-    # Lottie animation
-
     st.title("✨ Pose Muse ")
     st.caption("Create and schedule platform-specific posts 🚀")
     st.markdown("---")
@@ -104,6 +238,11 @@ def render_main_ui():
             st.error("⚠️ API call limit reached. Contact admin for more access.")
             logger.warning(f"API call limit reached for user: {email}")
             st.stop()
+
+        # Admin panel for admin users
+        if role == "admin":
+            with st.expander("Admin Panel", expanded=False):
+                admin_panel()
 
     # Input section
     col1, col2 = st.columns(2)
